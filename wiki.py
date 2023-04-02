@@ -1,0 +1,554 @@
+from .utils import Path, pathlike, logging
+import markdown as md
+from copy import deepcopy
+import shutil
+import os
+import re
+import argparse
+
+
+encoding = 'utf-8'
+logging.getLogger().setLevel(logging.INFO)
+__folder__ = Path(__file__).parent
+
+
+class Wiki:
+    """
+    Object representing a full wiki.
+    
+    #### Parameters
+    name (str)
+    :    Name of the wiki.
+    source (pathlike)
+    :    Folder with all of the markdown files in.
+    dest (pathlike)
+    :    Folder you want all the html files to go in.
+    templates (pathlike, None)
+    :    Folder containing html templates to use, named according to possible "tag" values in md YAML defs. If "tag" isn't present, will use "default". Defaults to None.
+    interpreter (markdown.Markdown, None)
+    :    Markdown interpreter to use. Defaults to None.
+    """
+    def __init__(
+            self,
+            name: str,
+            source: pathlike,
+            dest: pathlike,
+            templates=None,
+            interpreter=None
+    ):        
+        self.name = name
+        # Store source and destination folders
+        self.source = Path(source)
+        self.dest = Path(dest)
+        # If templates is None, use default templates folder
+        if templates is None:
+            templates = __folder__ / "templates"
+        self.templates_folder = templates
+        # Store/create interpreter
+        self.md = interpreter
+        if self.md is None:
+            self.md = md.Markdown(extensions=["extra", "admonition", "nl2br"])
+    
+    @property
+    def templates_folder(self):
+        return self._templates_folder
+    
+    @templates_folder.setter
+    def templates_folder(self, value):
+        # Clear templates dict
+        self.templates = {}
+        # Read in templates from folder
+        logging.start_delim("Reading templates...")
+        for template_file in Path(value).glob("*.html"):
+            self.templates[template_file.stem] = template_file.read_text(encoding=encoding)
+            logging.info(f"{template_file.stem}: {template_file}")
+        # Make sure we have a default template
+        if "default" not in self.templates:
+            self.templates['default'] = (__folder__ / "templates" / "default.html").read_text(encoding=encoding)
+            logging.info("No default template found. Using module default instead.")
+        # Make sure we have a home template
+        if "default" not in self.templates:
+            self.templates['home'] = (__folder__ / "templates" / "home.html").read_text(encoding=encoding)
+            logging.info("No default template found. Using module default instead.")
+        # Log success
+        logging.end_delim("Finished reading templates.")
+        
+        
+    def compile(self):
+        logging.start_delim("Configuring output folder...")
+        # Clear build folder
+        if self.dest.is_dir():
+            shutil.rmtree(self.dest)
+            logging.info(f"Deleted folder {self.dest}")
+        os.mkdir(str(self.dest))
+        logging.info(f"Created folder {self.dest}")
+        # Copy style, assets and scripts over
+        for key in ("assets", "style", "utils"):
+            # Copy source folder if there is one
+            if (self.source / ("_" + key)).is_dir():
+                shutil.copytree(
+                    self.source / ("_" + key),
+                    self.dest / key
+                )
+                logging.info(f"Copied {self.source / key} to {self.dest / key}.")
+        logging.end_delim("Finished configuring output folder.")
+        # Build every md file in source tree
+        logging.start_delim("Building pages...")
+        for file in self.source.glob("**/*.md"):
+            if file.parent == self.source and file.stem.lower() in ("index", self.name.lower()):
+                # For homepage, make special homepage object
+                page = WikiHomepage(
+                    wiki=self,
+                    source=file,
+                    dest=self.dest / file.relative_to(self.source).parent,
+                    template="home"
+                )
+            else:
+                # For the rest, make a general page object
+                page = WikiPage(
+                    wiki=self,
+                    source=file,
+                    dest=self.dest / file.relative_to(self.source).parent
+                )
+            page.compile(save=True)
+        logging.end_delim("Finished building.")
+
+
+class WikiPage:
+    def __init__(
+            self,
+            wiki: Wiki,
+            source: pathlike,
+            dest: pathlike,
+            template="default",
+    ):
+        """
+        An indiviual page of a wiki.
+
+        #### Parameters
+        wiki : Wiki
+            Wiki which this page sits within
+        source : Path, str
+            Markdown file to read in
+        dest : Path, str
+            Folder to write HTML file to
+        template : str
+            Which of the Wiki's template HTML files to use
+        """
+        self.wiki = wiki
+        self.source = source
+        self.dest = dest
+        self.template = template
+        self.breadcrumbs = Breadcrumbs(page=self)
+        self.contents = Contents(page=self)
+    
+    @property
+    def source(self):
+        return self._source
+    
+    @source.setter
+    def source(self, value):
+        # Store source ref
+        self._source = Path(value)
+        # Read source file
+        logging.info(f"Read '{self.source.relative_to(self.wiki.source)}'")
+        self.content_md = self.source.read_text(encoding=encoding)
+        # Set title
+        if self.is_home:
+            self.title = self.wiki.name
+        elif self.is_index:
+            self.title = self._source.parent.stem
+        else:
+            self.title = self._source.stem
+
+    @property
+    def dest(self):
+        return self._dest
+    
+    @dest.setter
+    def dest(self, value):
+        self._dest = Path(value)
+
+    @property
+    def template(self):
+        return self._template
+    
+    @template.setter
+    def template(self, value):
+        """
+        Set this page's template from the dict of templates in its wiki object.
+        """
+        if value in self.wiki.templates:
+            # Get template from wiki
+            self._template = self.wiki.templates[value]
+        else:
+            # Use default if template not found, but warn
+            self._template = self.wiki.templates['default']
+            logging.warn(f"No template '{value}' for Wiki '{self.wiki.name}'. Using default.\n")
+    
+    @property
+    def is_index(self):
+        """
+        Is this the index page of a folder?
+        """
+        return self.source.stem.lower() in ("index", self.source.parent.stem)
+
+    @property
+    def is_home(self):
+        """
+        Is this the homepage of the whole wiki?
+        """
+        return self._source.parent == self.wiki.source and self._source.stem.lower() in ("index", "home", self.wiki.name.lower())
+    
+    def compile(self, save=False):
+        def preprocess(content):
+            """
+            Transformations to apply to markdown content before compiling to HTML
+            """
+            # Style IPA strings
+            def _ipa(match):
+                ipa = match.group(1)
+                return f"<a class=ipa href=http://ipa-reader.xyz/?text={ipa}&voice=Brian>{ipa}</a>"
+            content = re.sub(r"^\/(.{1,})\/$", _ipa, content, flags=re.MULTILINE)
+            # Replace refs to markdown files with refs to equivalent html files
+            content = content.replace(".md)", ".html)")
+            
+            return content
+
+        def postprocess(content):
+            """
+            Transformations to apply to HTML content after compiling from markdown
+            """
+
+            return content
+        
+        # Copy template and content
+        page = deepcopy(self.template)
+        content_md = deepcopy(self.content_md)
+
+        # Add breadcrumbs
+        page = page.replace("{{breadcrumbs}}", str(self.breadcrumbs))
+
+        # For index files, add contents
+        if self.is_index:
+            page = page.replace("{{contents}}", str(self.contents))
+        else:
+            page = page.replace("{{contents}}", "")
+
+        # Update tab title
+        if self.is_home:
+            page = page.replace("{{stem}}", f"{self.wiki.name}")
+        else:
+            page = page.replace("{{stem}}", f"{self.wiki.name}: {self.title}")
+        
+        # Update header
+        page = page.replace("{{title}}", self.wiki.name)
+
+        # Update page title (if there isn't one)
+        if not content_md.startswith("# ") and not isinstance(self, WikiHomepage):
+            content_md = (
+                f"# {self.title}\n"
+                f"{content_md}"
+                )
+
+        # Transpile html content
+        content_md = preprocess(content_md)
+        content_html = self.wiki.md.convert(content_md)
+        content_html = postprocess(content_html)
+
+        # Store html content
+        self.content_html = content_html
+        logging.info(f"Transpiled '{self.source.relative_to(self.wiki.source)}' to HTML.")
+
+        # Insert content into page
+        page = page.replace("{{content}}", content_html)
+
+        # Normalize paths
+        for key in ("root", "style", "utils"):
+            norm = self.wiki.source.normalize(self.source)
+            if key != "root":
+                norm /= key
+            page = page.replace("{{%s}}" % key, str(norm).replace("\\", "/"))
+        # Remove underscore from assets links
+        page = page.replace("_assets/", "assets/")
+
+        # Store full page content
+        self.page = page
+
+        if save:
+            self.save()
+    
+    def save(self):
+        # Get file name - use index for index pages
+        if self.is_index:
+            stem = "index"
+        else:
+            stem = self.source.stem
+        # Construct destination file
+        dest = self.dest / (stem + ".html")
+        # Make sure directory exists
+        if not dest.parent.is_dir():
+            os.makedirs(str(dest.parent))
+            logging.info(f"Created directory {dest.parent}.")
+        # Save file
+        dest.write_text(self.page, encoding=encoding)
+        logging.info(f"Written {dest.relative_to(self.wiki.dest)}.")
+
+
+class WikiHomepage(WikiPage):
+    """
+    The main page of a wiki - like a WikiPage in most respects, but with 
+    different contents and no breadcrumbs.
+
+    wiki (Wiki)
+    :    Wiki which this page sits within
+    source (Path, str)
+    :    Markdown file to read in
+    dest (Path, str)
+    :    Folder to write HTML file to
+    template (str)
+    :    Which of the Wiki's template HTML files to use
+    """
+    def __init__(
+            self,
+            wiki: Wiki,
+            source: pathlike,
+            dest: pathlike,
+            template="home",
+    ):
+        # Initialise as normal
+        WikiPage.__init__(
+            self, 
+            wiki=wiki, 
+            source=source, 
+            dest=dest, 
+            template=template
+        )
+        # Create a contents object for each folder instead of one big one
+        self.contents = ContentsArray()
+        for folder in sorted(self.source.parent.glob("*/"), key=lambda m: m.stem):
+            indexed = (folder / "index.md").is_file() or (folder / f"{folder.stem}.md").is_file()
+            if folder.is_dir() and indexed and not folder.stem.startswith("_") and not folder.stem.startswith("."):
+                self.contents[folder.stem] = Contents(page=self, path=folder)
+
+
+class Breadcrumbs:
+    """
+    Array of links pointing back to the Wiki source.
+    
+    #### Parameters
+    page (WikiPage)
+    :    Page which these breadcrumbs belong to.
+    """
+
+    class Crumb:
+        def __init__(
+                self,
+                page:WikiPage,
+                file:Path
+            ):
+            # Get link
+            root = Path()
+            for n in page.source.relative_to(file).parents[:-1]:
+                root /= ".."
+            self.href = root
+            # Get name
+            stem = file.stem
+            if stem in ("", page.wiki.source.stem):
+                stem = "Home"
+            self.label = stem
+        
+        def __str__(self):
+            return f"<li><a href={self.href}>{self.label}</a></li>\n"
+
+    def __init__(
+            self,
+            page:WikiPage
+        ):
+        self.page = page
+        self.wiki = self.page.wiki
+
+        # Get list of parents
+        self.parents = list(self.page.source.relative_to(self.wiki.source).parents)
+        self.parents.reverse()
+        # Turn them into crumbs
+        self.crumbs = []
+        for file in self.parents:
+            # Don't make crumb for folder if this is its index file
+            if file.stem == self.page.source.parent.stem:
+                continue
+            # Make a crumb for this level
+            crumb = self.Crumb(
+                page=self.page,
+                file=(self.wiki.source / file).resolve()
+            )
+            self.crumbs.append(crumb)
+    
+    def __str__(self):
+        # If we're at the absolute root, breadcrumbs are blank
+        if self.page.source.parent == self.wiki.source:
+            return ""
+        
+        # Start breadcrumbs
+        breadcrumbs = "<ul class=wiki-breadcrumbs>\n"
+        # Stringify crumbs
+        for crumb in self.crumbs:
+            breadcrumbs += str(crumb)
+        # End breadcrumbs
+        breadcrumbs += "</ul>"
+        
+        return breadcrumbs
+
+
+class Contents:
+    """
+    Contents list for a folder within this Wiki.
+    
+    #### Parameters
+    page (WikiPage)
+    :    Page to create links relative to.
+    path (pathlike, None)
+    :    Path of the folder to create contents for, leave as None to point to page parent.
+    """
+        
+    class PageLink:
+        def __init__(
+                self,
+                page:WikiPage,
+                file:Path,
+        ):
+            self.href = file.relative_to(page.source.parent).parent / file.stem
+            self.label = file.stem
+        
+        def __str__(self):
+            return f"<a href={self.href}><li class=wiki-contents-page>{self.label}</li></a>"
+
+    class FolderLink:
+        def __init__(
+                self,
+                page:WikiPage,
+                folder:Path
+        ):
+            # Get own params
+            self.href = folder.relative_to(page.source.parent).parent / folder.stem
+            self.label = folder.stem
+            # First do folders
+            self.items = []
+            for file in sorted(folder.glob("*/"), key=lambda m: m.stem):
+                indexed = (file / "index.md").is_file() or (file / f"{file.stem}.md").is_file()
+                if file.is_dir() and indexed and not file.stem.startswith("_") and not folder.stem.startswith("."):
+                    item = Contents.FolderLink(
+                        page=page,
+                        folder=file
+                    )
+                    self.items.append(item)
+            # Then do files
+            for file in sorted(folder.glob("*.md"), key=lambda m: m.stem):
+                if file.suffix == ".md" and file.stem not in ("index", folder.stem):
+                    item = Contents.PageLink(
+                        page=page,
+                        file=file
+                    )
+                    self.items.append(item)
+        
+        def __str__(self):
+            # Open element
+            content = (
+                f"<a href={self.href}><li class=wiki-contents-folder>{self.label}<ul>"
+            )
+            # Add each item
+            for item in self.items:
+                content += f"{item}\n"
+            # Close element
+            content += f"</ul></li></a>"
+
+            return content 
+
+    def __init__(
+            self,
+            page:WikiPage,
+            path:pathlike=None
+    ):
+        self.page = page
+        # Use page parent if no path given
+        if path is None:
+            path = page.source.parent
+
+        # Make base-level folder
+        folder = Contents.FolderLink(
+            page=page,
+            folder=path
+        )
+
+        self.items = folder.items
+    
+    def __str__(self):
+        # Open element
+        content = (
+            "<ul class=wiki-contents>\n"
+            "<h3>Contents</h3>\n"
+        )
+        # Add each item
+        for item in self.items:
+            content += f"{item}\n"
+        # Close element
+        content += "</ul>"
+
+        return content
+
+
+class ContentsArray(dict):
+    """
+    An array of names Contents objects, who stringify themselves with titles 
+    and without the associated gubbins of a dict.
+        
+    #### Parameters
+    page (WikiPage)
+    :    Page to create links relative to.
+    path (pathlike, None)
+    :    Path of the folder to create contents for, leave as None to point to page parent.
+    """
+    def __str__(self):
+        """
+        Convert each contained Contents object to a string and concatenate.
+        """
+        content = ""
+        for title, obj in sorted(self.items(), key=lambda m: m[0]):
+            # Open element
+            content += (
+                f"<ul class=wiki-contents>\n"
+                f"<h3>{title}</h3>\n"
+            )
+            # Add each item
+            for item in obj.items:
+                content += f"{item}\n"
+            # Close element
+            content += "</ul>"
+
+        return content
+
+
+
+# If running from command line...
+if __name__ == "__main__":
+    # Create argument parser
+    parser = argparse.ArgumentParser()
+    parser.add_argument("name")
+    parser.add_argument("source")
+    parser.add_argument("dest")
+    parser.add_argument("templates")
+    # Get arguments
+    args = parser.parse_args()
+    # Validate arguments
+    assert args.name, "Wiki needs a name! Supply one with --name"
+    assert args.source, "Can't compile without a source folder. Supply one with --source"
+    assert args.source, "Can't compile without a destination folder. Supply one with --dest"
+    # Create Wiki object
+    wiki = Wiki(
+        name="Iuncterra",
+        source=__folder__ / "source",
+        dest=__folder__ / "docs",
+        templates=__folder__ / "source" / "_templates" / "html"
+    )
+    # Compile it
+    wiki.compile()
