@@ -141,6 +141,7 @@ class WikiPage:
         self.template = template
         self.breadcrumbs = Breadcrumbs(page=self)
         self.contents = Contents(page=self)
+        self.navbar = NavBar(page=self)
     
     @property
     def source(self):
@@ -243,6 +244,7 @@ class WikiPage:
         
         # Update header
         page = page.replace("{{title}}", self.wiki.name)
+        page = page.replace("{{nav}}", str(self.navbar))
 
         # Update page title (if there isn't one)
         if not content_md.startswith("# ") and not isinstance(self, WikiHomepage):
@@ -527,6 +529,36 @@ class ContentsArray(dict):
 
         return content
 
+
+class NavBar:
+    def __init__(
+            self,
+            page:WikiPage
+        ):
+        """
+        Navigation links for the whole wiki.
+        
+        #### Parameters
+        page (WikiPage)
+        :    Page to normalize links against
+        """
+        self.page = page
+        self.wiki = self.page.wiki
+        # Create links to each folder in wiki
+        self.links = []
+        for folder in sorted(self.wiki.source.glob("*/"), key=lambda m: m.stem):
+            indexed = (folder / "index.md").is_file() or (folder / f"{folder.stem}.md").is_file()
+            if folder.is_dir() and indexed and not folder.stem.startswith("_") and not folder.stem.startswith("."):
+                self.links.append(
+                    self.wiki.source.normalize(self.page.source) / folder.relative_to(self.wiki.source)
+                )
+    
+    def __str__(self):
+        content = "<nav class=wiki-nav>\n"
+        for link in self.links:
+            content += f"\t<a href={link}>{link.stem}</a>\n"
+        content += "</nav>\n"
+        return content
 
 
 # If running from command line...

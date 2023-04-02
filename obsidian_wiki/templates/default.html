@@ -7,17 +7,14 @@
 
     <header id="home-page-header">
         <h1><a href="{{root}}">{{title}}</a></h1>
-
-        <nav>
-        </nav>
+        {{nav}}
     </header>
 
     <main>
-        <section class="wiki-homepage">
-            {{content}}
-        </section>
-        <section class="wiki-contents-array">
+        <section class="wiki-page">
             {{contents}}
+            {{content}}
+            {{breadcrumbs}}
         </section>
     </main>
 
