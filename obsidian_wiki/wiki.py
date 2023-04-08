@@ -351,7 +351,8 @@ class Breadcrumbs:
             ):
             # Get link
             root = Path()
-            for n in page.source.relative_to(file).parents[:-1]:
+            parents = list(page.source.relative_to(file).parents)
+            for n in parents[:-1]:
                 root /= ".."
             self.href = root
             # Get name
