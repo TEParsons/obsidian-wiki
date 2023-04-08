@@ -192,7 +192,7 @@ class WikiPage:
         """
         Is this the index page of a folder?
         """
-        return self.source.stem.lower() in ("index", self.source.parent.stem)
+        return self.source.stem.lower() in ("index", self.source.parent.stem.lower())
 
     @property
     def is_home(self):
