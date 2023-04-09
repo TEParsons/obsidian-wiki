@@ -251,7 +251,14 @@ class WikiPage:
             content = re.sub(r"📑\[(.*)\]\((.*)\)", _contents, content, flags=re.MULTILINE)
 
             # Replace refs to markdown files with refs to equivalent html files
-            content = content.replace(".md)", ".html)")
+            def _links(match):
+                label = match.group(1)
+                path = match.group(2)
+                # Remove spaces from link stem
+                path = path.replace(" ", "").replace("%20", "")
+                # Replace .md with .html
+                return f"[{label}]({path}.html)"
+            content = re.sub(r"\[(.*)\]\((.*)\.md\)", _links, content, flags=re.MULTILINE)
             
             return content
 
@@ -320,6 +327,7 @@ class WikiPage:
         else:
             stem = self.source.stem
         # Construct destination file
+        stem = stem.replace(" ", "").replace("%20", "")
         dest = self.dest / (stem + ".html")
         # Make sure directory exists
         if not dest.parent.is_dir():
@@ -453,7 +461,7 @@ class Contents:
                 page:WikiPage,
                 file:Path,
         ):
-            self.href = file.relative_to(page.source.parent).parent / file.stem
+            self.href = file.relative_to(page.source.parent).parent / file.stem.replace(" ", "").replace("%20", "")
             self.label = file.stem
         
         def __str__(self):
