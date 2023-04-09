@@ -140,7 +140,6 @@ class WikiPage:
         self.dest = dest
         self.template = template
         self.breadcrumbs = Breadcrumbs(page=self)
-        self.contents = Contents(page=self)
         self.navbar = NavBar(page=self)
     
     @property
@@ -211,6 +210,24 @@ class WikiPage:
                 ipa = match.group(1)
                 return f"<a class=ipa href=http://ipa-reader.xyz/?text={ipa}&voice=Brian>{ipa}</a>"
             content = re.sub(r"^\/(.{1,})\/$", _ipa, content, flags=re.MULTILINE)
+
+            # Insert contents from markmoji-style syntax
+            def _contents(match):
+                title = match.group(1)
+                path = Path(match.group(2))
+                # Resolve relative paths
+                if not path.is_absolute():
+                    path = (self.source.parent / path).resolve()
+                # Construct Contents object
+                obj = Contents(
+                    page=self,
+                    path=path,
+                    title=title
+                )
+
+                return str(obj)
+            content = re.sub(r"📑\[(.*)\]\((.*)\)", _contents, content, flags=re.MULTILINE)
+
             # Replace refs to markdown files with refs to equivalent html files
             content = content.replace(".md)", ".html)")
             
@@ -229,12 +246,6 @@ class WikiPage:
 
         # Add breadcrumbs
         page = page.replace("{{breadcrumbs}}", str(self.breadcrumbs))
-
-        # For index files, add contents
-        if self.is_index:
-            page = page.replace("{{contents}}", str(self.contents))
-        else:
-            page = page.replace("{{contents}}", "")
 
         # Update tab title
         if self.is_home:
@@ -470,9 +481,11 @@ class Contents:
     def __init__(
             self,
             page:WikiPage,
-            path:pathlike=None
+            path:pathlike=None,
+            title:str="Contents"
     ):
         self.page = page
+        self.title = title
         # Use page parent if no path given
         if path is None:
             path = page.source.parent
@@ -489,8 +502,12 @@ class Contents:
         # Open element
         content = (
             "<ul class=wiki-contents>\n"
-            "<h3>Contents</h3>\n"
         )
+        # Write title (if any)
+        if self.title:
+            content += (
+                f"<h3>{self.title}</h3>\n"
+            )
         # Add each item
         for item in self.items:
             content += f"{item}\n"
