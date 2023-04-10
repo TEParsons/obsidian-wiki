@@ -527,6 +527,7 @@ class Contents:
         )
 
         self.items = folder.items
+        self.href = folder.href
     
     def __str__(self):
         # Open element
@@ -536,7 +537,7 @@ class Contents:
         # Write title (if any)
         if self.title:
             content += (
-                f"<h3>{self.title}</h3>\n"
+                f"<h3><a href={self.href}>{self.title}</a></h3>\n"
             )
         # Add each item
         for item in self.items:
