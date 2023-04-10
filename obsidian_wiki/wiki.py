@@ -50,6 +50,33 @@ class Wiki:
         self.md = interpreter
         if self.md is None:
             self.md = md.Markdown(extensions=["extra", "admonition", "nl2br"])
+        # Get wiki-level metadata
+        self.meta = self.get_meta()
+        print(self.meta)
+    
+    def get_meta(self):
+        # Setup parser to read metadata
+        parser = md.Markdown(extensions=["meta"])
+        # Find index file of this wiki (if any)
+        index_file = None
+        for name in (
+            "index.md",
+            "home.md",
+            f"{self.name}.md",
+            f"{self.name.lower()}.md",
+            f"{self.name.upper()}.md",
+            f"{self.name.title()}.md",
+        ):
+            if (self.source / name).is_file():
+                index_file = self.source / name
+        # If no index file, return blank
+        if index_file is None:
+            return {}
+        # Read index file
+        content = index_file.read_text(encoding=encoding)
+        # Get metadata
+        parser.convert(content)
+        return parser.Meta
     
     @property
     def templates_folder(self):
@@ -595,12 +622,16 @@ class NavBar:
         self.wiki = self.page.wiki
         # Create links to each folder in wiki
         self.links = []
-        for folder in sorted(self.wiki.source.glob("*/"), key=lambda m: m.stem):
-            indexed = (folder / "index.md").is_file() or (folder / f"{folder.stem}.md").is_file()
-            if folder.is_dir() and indexed and not folder.stem.startswith("_") and not folder.stem.startswith("."):
-                self.links.append(
-                    self.wiki.source.normalize(self.page.source) / folder.relative_to(self.wiki.source)
-                )
+        for link in self.wiki.meta.get('nav-links', []):
+            # Skip blank (probably a newline)
+            if not link:
+                continue
+            # Path-ise
+            link = Path(link)
+            # Normalise to current page
+            self.links.append(
+                self.wiki.source.normalize(self.page.source) / link
+            )
     
     def __str__(self):
         content = "<nav class=wiki-nav>\n"
