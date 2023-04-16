@@ -254,11 +254,16 @@ class WikiPage:
             """
             Transformations to apply to markdown content before compiling to HTML
             """
-            # Style IPA strings
+            # Convert IPA shorthand to Markmoji (/ipa/ -> 🗣[ipa]())
+            def _ipa_shorthand(match):
+                ipa = match.group(1)
+                return f"🗣[{ipa}]()"
+            content = re.sub(r"^\/(.{1,})\/$", _ipa_shorthand, content, flags=re.MULTILINE)
+            # Immitate Markmoji (waiting for next release)
             def _ipa(match):
                 ipa = match.group(1)
                 return f"<a class=ipa href=http://ipa-reader.xyz/?text={ipa}&voice=Brian>{ipa}</a>"
-            content = re.sub(r"^\/(.{1,})\/$", _ipa, content, flags=re.MULTILINE)
+            content = re.sub(r"🗣\[.*\]\(.*\)", _ipa, content, flags=re.MULTILINE)
 
             # Insert contents from markmoji-style syntax
             def _contents(match):
